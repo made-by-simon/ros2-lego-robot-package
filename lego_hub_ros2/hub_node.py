@@ -1,17 +1,18 @@
+ #!/usr/bin/env python3
+
 """ROS 2 node for LEGO Robot Inventor Hub interface via Bluetooth."""
 
 import asyncio
 import struct
-from threading import Thread, Event
+from threading import Event, Thread
 
+from bleak import BleakClient, BleakScanner
+from geometry_msgs.msg import Vector3
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Imu, Range, JointState
+from sensor_msgs.msg import Imu, JointState, Range
 from std_msgs.msg import ColorRGBA, Float32, Int32
-from geometry_msgs.msg import Vector3
 from std_srvs.srv import Trigger
-
-from bleak import BleakScanner, BleakClient
 
 
 DEVICE_NAMES = {0: "NONE", 1: "MOTOR", 2: "COLOR", 3: "ULTRASONIC"}
@@ -23,13 +24,12 @@ class LegoHubNode(Node):
     """ROS 2 node for interfacing with LEGO Robot Inventor Hub."""
 
     def __init__(self):
+        """Initialize the LEGO Hub node."""
         super().__init__("lego_hub_node")
 
-        # Parameters.
         self.declare_parameter("hub_name", "Pybricks Hub")
         self.hub_name = self.get_parameter("hub_name").value
 
-        # State.
         self.device_config = []
         self.config_received = Event()
         self.pubs = {}
@@ -38,21 +38,20 @@ class LegoHubNode(Node):
         self.loop = None
         self.cmd_queue = None
 
-        # Static publishers.
+        # Static publishers
         self.imu_pub = self.create_publisher(Imu, "hub/imu", 10)
         self.battery_pub = self.create_publisher(Float32, "hub/battery", 10)
 
-        # Static subscribers.
+        # Static subscribers
         self.create_subscription(ColorRGBA, "hub/led", self._led_callback, 10)
 
-        # Static services.
+        # Static services
         self.create_service(
             Trigger,
             "hub/stop_all",
             lambda req, res: self._service_response(res, 0x70, "Motors stopped"),
         )
 
-        # Start Bluetooth thread.
         Thread(target=self._bluetooth_thread, daemon=True).start()
         self.get_logger().info(f"Searching for '{self.hub_name}'...")
 
@@ -67,7 +66,6 @@ class LegoHubNode(Node):
         """Main Bluetooth connection loop."""
         while rclpy.ok():
             try:
-                # Scan for device.
                 device = await BleakScanner.find_device_by_name(
                     self.hub_name, timeout=10.0
                 )
@@ -75,7 +73,6 @@ class LegoHubNode(Node):
                     await asyncio.sleep(5)
                     continue
 
-                # Connect.
                 self.client = BleakClient(
                     device, disconnected_callback=self._on_disconnect
                 )
@@ -85,14 +82,12 @@ class LegoHubNode(Node):
                 self.connected = True
                 self.get_logger().info("Connected! Press hub button to start.")
 
-                # Wait for configuration.
                 await asyncio.wait_for(
                     self.loop.run_in_executor(None, self.config_received.wait),
                     timeout=10.0,
                 )
                 self._setup_dynamic_interfaces()
 
-                # Command processing loop.
                 while self.connected and rclpy.ok():
                     try:
                         cmd = await asyncio.wait_for(
@@ -126,54 +121,53 @@ class LegoHubNode(Node):
         if len(payload) < 3:
             return
 
-        # Configuration message.
         if payload[:3] == b"CFG" and len(payload) >= 5:
-            length = struct.unpack(">H", payload[3:5])[0]
-            cfg = payload[5 : 5 + length]
-
-            self.device_config = []
-            num_devices = cfg[0]
-
-            for i in range(num_devices):
-                if len(cfg) >= 1 + (i + 1) * 2:
-                    port_idx = cfg[1 + i * 2]
-                    dev_type = cfg[2 + i * 2]
-                    self.device_config.append((port_idx, dev_type))
-                    self.get_logger().info(
-                        f"  Port {PORT_NAMES[port_idx]}: "
-                        f"{DEVICE_NAMES.get(dev_type, 'Unknown')}"
-                    )
-
-            self.config_received.set()
-
-        # Sensor data message.
+            self._handle_configuration(payload)
         elif payload[:3] == b"SNS" and len(payload) >= 5:
             length = struct.unpack(">H", payload[3:5])[0]
             sensor_data = payload[5 : 5 + length]
             self._parse_sensor_data(sensor_data)
+
+    def _handle_configuration(self, payload):
+        """Parse and store device configuration."""
+        length = struct.unpack(">H", payload[3:5])[0]
+        cfg = payload[5 : 5 + length]
+
+        self.device_config = []
+        num_devices = cfg[0]
+
+        for i in range(num_devices):
+            if len(cfg) >= 1 + (i + 1) * 2:
+                port_idx = cfg[1 + i * 2]
+                dev_type = cfg[2 + i * 2]
+                self.device_config.append((port_idx, dev_type))
+                self.get_logger().info(
+                    f"  Port {PORT_NAMES[port_idx]}: "
+                    f"{DEVICE_NAMES.get(dev_type, 'Unknown')}"
+                )
+
+        self.config_received.set()
 
     def _setup_dynamic_interfaces(self):
         """Create topics and services based on detected devices."""
         for port_idx, dev_type in self.device_config:
             port = PORT_NAMES[port_idx].lower()
 
-            if dev_type == 1:  # Motor.
+            if dev_type == 1:
                 self._setup_motor_interface(port_idx, port)
-            elif dev_type == 2:  # Color sensor.
+            elif dev_type == 2:
                 self._setup_color_interface(port)
-            elif dev_type == 3:  # Ultrasonic sensor.
+            elif dev_type == 3:
                 self._setup_ultrasonic_interface(port)
 
         self.get_logger().info("Ready!")
 
     def _setup_motor_interface(self, port_idx, port):
         """Create motor topics and services."""
-        # Publisher.
         self.pubs[f"motor_{port}/state"] = self.create_publisher(
             JointState, f"hub/motor_{port}/state", 10
         )
 
-        # Subscribers.
         self.create_subscription(
             Float32,
             f"hub/motor_{port}/velocity",
@@ -197,7 +191,6 @@ class LegoHubNode(Node):
             10,
         )
 
-        # Services.
         self.create_service(
             Trigger,
             f"hub/motor_{port}/stop",
@@ -231,10 +224,10 @@ class LegoHubNode(Node):
             values = struct.unpack(f">{num_floats}f", data[: num_floats * 4])
             idx = 0
 
-            # IMU data (9 floats).
             if num_floats < 10:
                 return
 
+            # IMU data (9 floats)
             imu = Imu()
             imu.header.stamp = self.get_clock().now().to_msg()
             imu.header.frame_id = "hub_imu"
@@ -247,15 +240,15 @@ class LegoHubNode(Node):
             self.imu_pub.publish(imu)
             idx += 9
 
-            # Battery voltage (1 float).
+            # Battery voltage (1 float)
             self.battery_pub.publish(Float32(data=values[idx] / 1000.0))
             idx += 1
 
-            # Device-specific data.
+            # Device-specific data
             for port_idx, dev_type in self.device_config:
                 port = PORT_NAMES[port_idx].lower()
 
-                if dev_type == 1 and idx + 2 < num_floats:  # Motor.
+                if dev_type == 1 and idx + 2 < num_floats:
                     js = JointState()
                     js.header.stamp = self.get_clock().now().to_msg()
                     js.name = [f"motor_{port}"]
@@ -266,11 +259,11 @@ class LegoHubNode(Node):
                         self.pubs[f"motor_{port}/state"].publish(js)
                     idx += 3
 
-                elif dev_type == 2 and idx + 4 < num_floats:  # Color sensor.
+                elif dev_type == 2 and idx + 4 < num_floats:
                     self._publish_color_data(port, values, idx)
                     idx += 5
 
-                elif dev_type == 3 and idx < num_floats:  # Ultrasonic sensor.
+                elif dev_type == 3 and idx < num_floats:
                     if f"ultrasonic_{port}/distance" in self.pubs and values[idx] >= 0:
                         rng = Range()
                         rng.header.stamp = self.get_clock().now().to_msg()
@@ -289,7 +282,6 @@ class LegoHubNode(Node):
         """Publish color sensor data."""
         color_val = int(values[idx])
 
-        # Detected color.
         if f"color_{port}/color" in self.pubs and color_val >= 0:
             color_map = {
                 0: (0, 0, 0),
@@ -305,11 +297,11 @@ class LegoHubNode(Node):
             r, g, b = color_map.get(color_val, (0.5, 0.5, 0.5))
             self.pubs[f"color_{port}/color"].publish(ColorRGBA(r=r, g=g, b=b, a=1.0))
 
-        # Reflection.
         if f"color_{port}/reflection" in self.pubs:
-            self.pubs[f"color_{port}/reflection"].publish(Int32(data=int(values[idx + 1])))
+            self.pubs[f"color_{port}/reflection"].publish(
+                Int32(data=int(values[idx + 1]))
+            )
 
-        # HSV.
         if f"color_{port}/hsv" in self.pubs:
             self.pubs[f"color_{port}/hsv"].publish(
                 Vector3(x=values[idx + 2], y=values[idx + 3], z=values[idx + 4])

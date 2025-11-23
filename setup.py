@@ -1,8 +1,9 @@
 """Setup script for lego_hub_ros2 package."""
 
-from setuptools import find_packages, setup
 from glob import glob
 import os
+
+from setuptools import find_packages, setup
 
 package_name = "lego_hub_ros2"
 
@@ -13,7 +14,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (os.path.join("share", package_name, "config"), glob("config/*")),
     ],
     install_requires=["setuptools"],
@@ -22,10 +23,9 @@ setup(
     maintainer_email="smw2@ualberta.ca",
     description="ROS 2 interface for LEGO Robot Inventor Hub via Bluetooth",
     license="MIT",
-    tests_require=["pytest"],
     entry_points={
-        "console_scripts": [
-            "hub_node = lego_hub_ros2.hub_node:main",
-        ],
+    "console_scripts": [
+        "hub_node = lego_hub_ros2.hub_node:main",
+    ],
     },
 )
