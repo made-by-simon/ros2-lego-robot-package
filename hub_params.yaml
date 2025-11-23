@@ -1,3 +1,0 @@
-lego_hub_node:
-  ros__parameters:
-    hub_name: "Pybricks Hub"
